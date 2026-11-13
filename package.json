@@ -1,0 +1,20 @@
+{
+  "name": "pedus-assistant-pro",
+  "version": "1.2.1",
+  "private": true,
+  "description": "PedusAssistant 1.2 PRO — asistente de voz flotante con wake word, visión de pantalla, comandos personalizados y Groq.",
+  "type": "module",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "check": "node scripts/check-frontend.mjs",
+    "mock": "node scripts/mock-groq.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

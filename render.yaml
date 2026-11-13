@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: pedus-assistant
+    runtime: node
+    plan: free
+    region: frankfurt
+    branch: main
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GROQ_API_KEY
+        sync: false
+      - key: PEDUS_ACCESS_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: PEDUS_GITHUB_USER
+        sync: false
+      - key: PEDUS_DEFAULT_VOICE
+        value: diana
