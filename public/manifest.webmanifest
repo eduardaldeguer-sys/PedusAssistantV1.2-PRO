@@ -1,0 +1,29 @@
+{
+  "name": "PedusAssistant 1.2 PRO",
+  "short_name": "Pedus",
+  "description": "Tu asistente de voz flotante. Di «Okey Pedus».",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
+  "background_color": "#06070b",
+  "theme_color": "#08090d",
+  "lang": "es",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Hablar con Pedus",
+      "short_name": "Hablar",
+      "url": "./?listen=1"
+    }
+  ]
+}
