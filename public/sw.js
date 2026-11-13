@@ -2,7 +2,7 @@
    Estrategia "red primero": siempre se sirve la última versión desplegada y la caché
    solo se usa si no hay red (o Render está arrancando). Así un deploy nuevo se ve
    al momento, sin quedarse con un app.js antiguo. La API nunca se cachea. */
-const CACHE = 'pedus-v1.2.1';
+const CACHE = 'pedus-v1.3.0';
 const SHELL = [
   './',
   './index.html',
@@ -15,6 +15,8 @@ const SHELL = [
   './js/screen.js',
   './js/ticker.js',
   './js/pip.js',
+  './js/orb.js',
+  './js/presets.js',
   './icon.svg',
   './manifest.webmanifest',
 ];

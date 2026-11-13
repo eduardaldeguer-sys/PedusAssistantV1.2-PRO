@@ -12,7 +12,7 @@ const int = (v, fallback) => {
 };
 
 export const config = {
-  version: '1.2.1',
+  version: '1.3.0',
   port: int(process.env.PORT, 3000),
   nodeEnv: process.env.NODE_ENV || 'development',
   // Nº de proxies de confianza delante del servidor (Render = 1).

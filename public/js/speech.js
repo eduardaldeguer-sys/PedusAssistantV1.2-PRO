@@ -47,8 +47,35 @@ export class VoiceOut {
       this.gain.connect(this.ctx.destination);
       this.gain.connect(this.analyser);
     }
-    if (this.ctx.state === 'suspended') await this.ctx.resume();
+    if (this.ctx.state === 'suspended') {
+      // Sin un gesto previo Chrome puede dejar resume() colgado: no esperamos para siempre.
+      await Promise.race([this.ctx.resume(), new Promise((r) => setTimeout(r, 500))]);
+      if (this.ctx.state === 'suspended') throw new Error('El navegador aún no deja reproducir audio.');
+    }
     return this.ctx;
+  }
+
+  /** Tono corto para confirmar que ha oído «Okey Pedus» sin tener que mirar la pantalla. */
+  async chime() {
+    try {
+      const ctx = await this.ensureContext();
+      const now = ctx.currentTime;
+      const gain = ctx.createGain();
+      gain.connect(ctx.destination);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.09, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+      for (const [freq, at] of [[660, 0], [990, 0.07]]) {
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        osc.connect(gain);
+        osc.start(now + at);
+        osc.stop(now + 0.24);
+      }
+    } catch {
+      /* sin audio todavía */
+    }
   }
 
   /** Para todo lo que suena sin avisar a la interfaz (uso interno). */

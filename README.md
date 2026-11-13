@@ -9,6 +9,24 @@ micrófono → Whisper (Groq) → modelo de chat (Groq) → TTS (Groq o voz del 
                         memoria · cambiar voz · GitHub · visión de pantalla
 ```
 
+
+## Solo voz (1.3)
+
+Pedus es **un orbe y nada más**. No hay cuadro de texto ni botón para hablar: solo reacciona cuando le llamas.
+
+- **«Okey Pedus»** lo despierta siempre (el orbe lanza una onda y suena un tono). Puedes decir la orden seguida
+  («Okey Pedus, abre YouTube») o llamarle y esperar. También sirve para interrumpirle mientras habla.
+- La detección es tolerante: acepta lo que el reconocedor de Chrome suele entender en su lugar
+  («ok pedos», «hockey bedus», «oye Pedro», «okeypedus»…). Lógica y casos en `public/js/mic.js`.
+- **250 comandos preinstalados** (`public/js/presets.js`): abrir 174 webs, 12 buscadores, 52 acciones locales
+  (hora, temporizadores, voz, tema, pantalla…), 2 de GitHub y 10 atajos al modelo. Se ejecutan al instante y sin
+  gastar tokens; cualquier otra frase la responde el modelo. Se ven, buscan y desactivan en **Ajustes → Comandos**.
+- El orbe (`public/js/orb.js`) se dibuja en un `<canvas>` y cambia con el estado: reposo, escuchando (tu voz),
+  pensando y hablando (su voz).
+- Los botones que aparecen al mover el ratón (pantalla, mini ventana, ajustes) no sirven para hablarle: existen
+  porque Chrome exige un clic para compartir pantalla y para conceder el micrófono la primera vez.
+- Necesita Chrome o Edge (reconocimiento de voz del navegador). `npm run check` verifica que siguen siendo 250.
+
 ## Lo que hace
 
 | Capacidad | Cómo |
