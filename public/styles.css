@@ -45,6 +45,13 @@ html[data-theme="light"] {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* El atributo `hidden` tiene que ganar siempre. Sin esto, cualquier regla con
+   `display: flex/grid` lo anulaba y los ajustes, la burbuja o la vista previa
+   no se podían cerrar. */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   height: 100%;
@@ -343,7 +350,26 @@ body::after {
     inset 0 0 30px rgba(255, 255, 255, 0.28),
     0 14px 40px -10px color-mix(in oklab, var(--accent) 80%, transparent);
   animation: orb-spin 14s linear infinite;
-  transition: filter var(--speed), inset var(--speed);
+  transition: filter var(--speed), inset var(--speed), scale 90ms linear;
+  /* Reacciona al volumen de la voz (--level lo pone app.js, de 0 a 1). */
+  scale: calc(1 + var(--level, 0) * 0.26);
+}
+
+.orb::before {
+  /* halo que crece con la voz */
+  content: "";
+  position: absolute;
+  inset: 16%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in oklab, var(--accent-2) 70%, transparent), transparent);
+  filter: blur(14px);
+  opacity: calc(var(--level, 0) * 1.4);
+  scale: calc(1 + var(--level, 0) * 0.9);
+  transition: opacity 120ms linear, scale 120ms linear;
+  pointer-events: none;
+}
+.pedus-window[data-state="speaking"] .orb::before {
+  background: radial-gradient(closest-side, color-mix(in oklab, var(--accent-3) 75%, transparent), transparent);
 }
 
 @keyframes orb-spin {
@@ -1205,6 +1231,174 @@ input[type="range"]::-webkit-slider-thumb {
 .toast.show {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
+}
+
+/* ---------------------------- mini ventana flotante ---------------------------- */
+
+.icon-btn.is-active {
+  color: var(--accent-2);
+  background: color-mix(in oklab, var(--accent-2) 14%, transparent);
+}
+
+.pip-note {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 28px 30px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13.5px;
+  background: var(--glass);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(30px);
+}
+.pip-note p {
+  margin: 0;
+}
+.pip-note-orb {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: conic-gradient(from 210deg, var(--accent), var(--accent-2), var(--accent-3), var(--accent));
+  opacity: 0.55;
+  animation: orb-spin 14s linear infinite;
+}
+
+/* Dentro de la ventanita: Pedus la ocupa entera y se adapta al tamaño que le des. */
+html.pip,
+html.pip body {
+  height: 100%;
+  overflow: hidden;
+}
+html.pip body {
+  display: block;
+}
+html.pip body::after {
+  display: none;
+}
+html.pip .pedus-window,
+html.pip .pedus-window.is-expanded {
+  width: 100vw;
+  height: 100vh;
+  max-height: none;
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+  transition: none;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html.pip .win-header {
+  cursor: default;
+  padding: 8px 10px 4px;
+}
+html.pip #btn-minimize,
+html.pip #btn-expand,
+html.pip #btn-settings,
+html.pip #btn-pip,
+html.pip .chips,
+html.pip .screen-preview,
+html.pip .composer,
+html.pip .log {
+  display: none !important;
+}
+html.pip .win-body {
+  flex: 1;
+  padding: 0 10px 10px;
+  gap: 8px;
+}
+html.pip .stage,
+html.pip .pedus-window.is-compact .stage {
+  flex: 1;
+  justify-content: center;
+  min-height: 0;
+  padding: 0;
+  gap: 8px;
+}
+html.pip .orb {
+  width: min(132px, 52vmin);
+  height: min(132px, 52vmin);
+  flex: none;
+}
+html.pip .orb-core,
+html.pip .pedus-window[data-state="listening"] .orb-core {
+  inset: 18%;
+}
+html.pip .pedus-window[data-state="listening"] .orb-core {
+  inset: 15%;
+}
+html.pip .orb-ring {
+  inset: 9%;
+}
+html.pip .orb-mic {
+  width: 22%;
+  height: 22%;
+}
+html.pip .caption {
+  font-size: 12px;
+  min-height: 0;
+}
+
+/* Ventanita muy baja: solo el orbe. */
+@media (max-height: 215px) {
+  html.pip .win-header,
+  html.pip .caption {
+    display: none;
+  }
+  html.pip .win-body {
+    padding: 6px;
+  }
+  html.pip .orb {
+    width: min(132px, 62vmin);
+    height: min(132px, 62vmin);
+  }
+}
+@media (max-height: 150px) {
+  html.pip .wave {
+    display: none;
+  }
+  html.pip .orb {
+    width: 82vmin;
+    height: 82vmin;
+  }
+}
+@media (max-width: 230px) {
+  html.pip .status-pill {
+    display: none;
+  }
+}
+
+/* Ventanita alta: aparece la conversación y el cuadro de texto. */
+@media (min-height: 440px) {
+  html.pip .stage,
+  html.pip .pedus-window.is-compact .stage {
+    flex: none;
+    padding: 4px 0;
+  }
+  html.pip .orb {
+    width: 96px;
+    height: 96px;
+  }
+  html.pip .log,
+  html.pip .pedus-window.is-compact .log {
+    display: flex !important;
+    flex: 1 1 0;
+    min-height: 0;
+    max-height: none;
+    opacity: 1;
+    padding: 4px 2px;
+    overflow-y: auto;
+  }
+  html.pip .composer {
+    display: flex !important;
+  }
+  html.pip #btn-screen,
+  html.pip #btn-photo {
+    display: none;
+  }
 }
 
 /* ---------------------------- responsive ---------------------------- */

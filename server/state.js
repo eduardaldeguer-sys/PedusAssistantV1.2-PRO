@@ -26,10 +26,9 @@ export function rateLimit({ key, max, windowMs }) {
   return { allowed: true };
 }
 
+/** IP del cliente según Express (respeta `trust proxy`, no se puede falsear con X-Forwarded-For). */
 export function clientKey(req) {
-  const fwd = req.headers['x-forwarded-for'];
-  const ip = (Array.isArray(fwd) ? fwd[0] : fwd || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
-  return ip;
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 export const health = {

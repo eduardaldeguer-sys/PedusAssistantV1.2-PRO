@@ -1,12 +1,14 @@
 import { config } from './config.js';
 
 export class UpstreamError extends Error {
-  constructor(message, { status = 502, code = 'upstream_error', retryAfter } = {}) {
+  constructor(message, { status = 502, code = 'upstream_error', retryAfter, upstreamStatus, upstreamCode } = {}) {
     super(message);
     this.name = 'UpstreamError';
     this.status = status;
     this.code = code;
     this.retryAfter = retryAfter;
+    this.upstreamStatus = upstreamStatus;
+    this.upstreamCode = upstreamCode;
   }
 }
 
@@ -52,6 +54,8 @@ async function request(path, { method = 'POST', body, headers = {}, timeoutMs = 
           status: res.status === 429 ? 429 : RETRYABLE_STATUS.has(res.status) ? 502 : 400,
           code: res.status === 429 ? 'rate_limited' : 'groq_error',
           retryAfter: res.headers.get('retry-after'),
+          upstreamStatus: res.status,
+          upstreamCode: parsed?.error?.code || parsed?.error?.type || '',
         });
         if (RETRYABLE_STATUS.has(res.status) && attempt < retries) {
           lastError = err;
@@ -96,6 +100,8 @@ export function chatCompletion({ model, messages, tools, toolChoice, temperature
       ...(maxTokens ? { max_completion_tokens: maxTokens } : {}),
       ...(tools?.length ? { tools, tool_choice: toolChoice || 'auto' } : {}),
       ...(responseFormat ? { response_format: responseFormat } : {}),
+      // Los gpt-oss razonan antes de contestar: para voz interesa que sea rápido.
+      ...(/gpt-oss/i.test(model) ? { reasoning_effort: 'low' } : {}),
       stream,
     },
     raw: stream,
@@ -103,7 +109,7 @@ export function chatCompletion({ model, messages, tools, toolChoice, temperature
 }
 
 /** Whisper transcription. Accepts a Blob/File. */
-export async function transcribe(file, { model = config.models.stt, language = 'es', prompt } = {}) {
+export async function transcribe(file, { model, language = 'es', prompt } = {}) {
   const form = new FormData();
   form.append('file', file, file.name || 'audio.webm');
   form.append('model', model);
@@ -115,11 +121,11 @@ export async function transcribe(file, { model = config.models.stt, language = '
 }
 
 /** Orpheus TTS. Returns an array of audio chunks capped at the model limit. */
-export function speechChunk(text, { voice } = {}) {
+export function speechChunk(text, { voice, model } = {}) {
   return request('/audio/speech', {
     headers: { Accept: 'audio/wav' },
     body: {
-      model: config.models.tts,
+      model,
       input: text,
       voice: voice || config.defaultVoice,
       response_format: 'wav',

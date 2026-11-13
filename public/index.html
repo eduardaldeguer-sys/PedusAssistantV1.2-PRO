@@ -24,6 +24,9 @@
           <span class="status-pill" id="status-pill">En espera</span>
         </div>
         <div class="win-actions">
+          <button class="icon-btn" id="btn-pip" title="Mini ventana flotante (siempre visible)" aria-label="Mini ventana flotante">
+            <svg viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5" /><rect x="12" y="11.5" width="7" height="5.5" rx="1.2" fill="currentColor" stroke="none" /></svg>
+          </button>
           <button class="icon-btn" id="btn-minimize" title="Minimizar" aria-label="Minimizar">
             <svg viewBox="0 0 24 24"><path d="M5 12h14" /></svg>
           </button>
@@ -91,6 +94,13 @@
       </div>
     </div>
 
+    <!-- Aviso en la página mientras Pedus vive en la mini ventana -->
+    <div class="pip-note" id="pip-note" hidden>
+      <span class="pip-note-orb" aria-hidden="true"></span>
+      <p>Pedus está en la mini ventana flotante.</p>
+      <button class="btn primary" id="btn-pip-back" type="button">Traerlo de vuelta</button>
+    </div>
+
     <!-- Botón flotante cuando está minimizado -->
     <button id="bubble" class="bubble" hidden aria-label="Abrir Pedus">
       <span class="bubble-core"></span>
@@ -102,7 +112,7 @@
       <aside class="sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <header class="sheet-head">
           <h2 id="settings-title">Ajustes de Pedus</h2>
-          <button class="icon-btn" id="btn-close-settings" aria-label="Cerrar">✕</button>
+          <button class="icon-btn" id="btn-close-settings" type="button" aria-label="Cerrar" title="Cerrar (Esc)">✕</button>
         </header>
 
         <nav class="tabs" role="tablist">
@@ -115,9 +125,17 @@
         <!-- VOZ -->
         <section class="tab-panel is-active" data-panel="voz">
           <div class="field">
+            <label for="set-engine">Motor de voz</label>
+            <select id="set-engine">
+              <option value="auto">Groq neuronal (con respaldo del sistema)</option>
+              <option value="system">Voz del sistema (español nativo, sin tokens)</option>
+            </select>
+            <p class="hint">La voz neuronal de Groq es un modelo inglés: lee el español con acento. La del sistema suena nativa.</p>
+          </div>
+          <div class="field">
             <label for="set-voice">Voz de Pedus</label>
             <select id="set-voice"></select>
-            <p class="hint">Seis voces neuronales de Groq Orpheus.</p>
+            <p class="hint">Voces neuronales de Groq (solo con el motor de Groq).</p>
           </div>
           <div class="field">
             <label for="set-style">Personalidad</label>
@@ -201,6 +219,11 @@
           <div class="row">
             <button class="btn" id="btn-permission">Dar permiso de micrófono</button>
           </div>
+          <label class="switch">
+            <input type="checkbox" id="set-autopip" checked />
+            <span>Mini ventana automática al cambiar de pestaña</span>
+          </label>
+          <p class="hint" id="pip-hint"></p>
           <label class="switch">
             <input type="checkbox" id="set-theme" />
             <span>Tema claro</span>

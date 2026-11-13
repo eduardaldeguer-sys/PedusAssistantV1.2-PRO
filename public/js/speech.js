@@ -1,8 +1,10 @@
 /**
- * Voz de salida: audio neuronal de Groq (Orpheus) con fallback automático
- * a la voz del sistema (Web Speech API) si Groq TTS falla o no hay red.
- * Incluye ducking, cancelación e interrupciones.
+ * Voz de salida: audio neuronal de Groq con fallback automático a la voz del sistema
+ * (Web Speech API) si Groq TTS falla o no hay red.
+ * El audio llega en streaming: empieza a sonar con el primer trozo.
  */
+
+import { ticker } from './ticker.js';
 
 const b64ToBlob = (b64, mime = 'audio/wav') => {
   const bin = atob(b64);
@@ -26,7 +28,10 @@ export class VoiceOut {
     this.stream = null;
     this.ctx = null;
     this.analyser = null;
-    this.rafId = null;
+    this.stopLevel = null;
+    this.abort = null;
+    this.pumping = null;
+    this.pumpGen = -1;
     this.source = null;
     this.generation = 0;
   }
@@ -40,15 +45,20 @@ export class VoiceOut {
       this.analyser.smoothingTimeConstant = 0.75;
       this.gain = this.ctx.createGain();
       this.gain.connect(this.ctx.destination);
+      this.gain.connect(this.analyser);
     }
     if (this.ctx.state === 'suspended') await this.ctx.resume();
     return this.ctx;
   }
 
-  /** Cancela cualquier audio en curso de inmediato. */
-  stop() {
+  /** Para todo lo que suena sin avisar a la interfaz (uso interno). */
+  halt() {
     this.generation += 1;
     this.queue = [];
+    if (this.abort) {
+      this.abort.abort();
+      this.abort = null;
+    }
     if (this.source) {
       try {
         this.source.stop();
@@ -57,55 +67,79 @@ export class VoiceOut {
       }
       this.source = null;
     }
-    if (this.stream) {
-      this.stream.getTracks().forEach((t) => t.stop());
-      this.stream = null;
-    }
     if (window.speechSynthesis) window.speechSynthesis.cancel();
-    if (this.rafId) cancelAnimationFrame(this.rafId);
-    this.rafId = null;
+    this.stopLevel?.();
+    this.stopLevel = null;
     this.playing = false;
-    this.current = null;
     this.onLevel(0);
+  }
+
+  /** Cancela cualquier audio en curso de inmediato. */
+  stop() {
+    this.halt();
     this.onEnd();
   }
 
-  /** Genera el audio, lo descarga y lo mete en cola. Empieza a sonar en cuanto llega el primer trozo. */
+  /** Pide el audio y lo va reproduciendo según llega. Si Groq falla, usa la voz del sistema. */
   async speak(text, { voice } = {}) {
     const clean = String(text || '').trim();
     if (!clean) return;
-    this.generation += 1;
+    this.halt(); // si ya estaba hablando, se corta: manda lo último
     const gen = this.generation;
     this.onStart();
 
-    let chunks = null;
+    const settings = this.getSettings();
+    if (settings.engine === 'system') return this.speakWithSystem(clean, gen);
+
+    let received = 0;
     try {
-      const res = await this.api.speak(clean, voice || this.getSettings().voice);
-      if (gen !== this.generation) return;
-      chunks = res.chunks || [];
+      await this.ensureContext();
+      this.abort = new AbortController();
+      received = await this.api.speakStream(
+        clean,
+        voice || settings.voice,
+        (chunk) => {
+          if (gen !== this.generation) return;
+          this.queue.push(b64ToBlob(chunk.audio, chunk.mime || 'audio/wav'));
+          this.pump(gen);
+        },
+        this.abort.signal,
+      );
     } catch (error) {
+      if (gen !== this.generation) return;
       console.warn('[pedus] TTS de Groq no disponible:', error.message);
     }
-
     if (gen !== this.generation) return;
 
-    if (chunks && chunks.length) {
-      for (const chunk of chunks) {
-        if (gen !== this.generation) return;
-        this.queue.push(b64ToBlob(chunk.audio, chunk.mime || 'audio/wav'));
-      }
-      await this.drain(gen);
-    } else {
-      await this.speakWithSystem(clean, gen);
+    if (!received) return this.speakWithSystem(clean, gen);
+
+    // Espera a que termine de sonar todo lo que queda en cola.
+    while (gen === this.generation && (this.queue.length || this.pumpGen === gen)) {
+      await this.pump(gen);
+    }
+    if (gen === this.generation) {
+      this.stopLevel?.();
+      this.stopLevel = null;
+      this.onLevel(0);
+      this.onEnd();
     }
   }
 
-  async drain(gen) {
-    while (this.queue.length && gen === this.generation) {
-      const blob = this.queue.shift();
-      await this.playBlob(blob, gen);
-    }
-    if (gen === this.generation) this.onEnd();
+  /** Reproduce la cola en orden. Solo hay una bomba activa por generación. */
+  pump(gen) {
+    if (this.pumping && this.pumpGen === gen) return this.pumping;
+    this.pumpGen = gen;
+    const job = (async () => {
+      while (this.queue.length && gen === this.generation) {
+        await this.playBlob(this.queue.shift(), gen);
+      }
+      if (this.pumpGen === gen) {
+        this.pumping = null;
+        this.pumpGen = -1;
+      }
+    })();
+    this.pumping = job;
+    return job;
   }
 
   async playBlob(blob, gen) {
@@ -120,7 +154,6 @@ export class VoiceOut {
       src.buffer = decoded;
       src.playbackRate.value = Math.min(1.5, Math.max(0.6, this.getSettings().rate || 1));
       src.connect(this.gain);
-      this.gain.connect(this.analyser);
       this.source = src;
       this.playing = true;
 
@@ -136,18 +169,16 @@ export class VoiceOut {
   }
 
   trackLevel(gen) {
-    if (this.rafId) cancelAnimationFrame(this.rafId);
+    if (this.stopLevel) return;
     const data = new Uint8Array(this.analyser.frequencyBinCount);
-    const loop = () => {
+    this.stopLevel = ticker.add(() => {
       if (gen !== this.generation) return;
       this.analyser.getByteFrequencyData(data);
       let sum = 0;
       for (let i = 0; i < data.length; i += 1) sum += data[i];
       const level = Math.min(1, sum / data.length / 90);
       this.onLevel(this.playing ? level : 0);
-      this.rafId = requestAnimationFrame(loop);
-    };
-    loop();
+    });
   }
 
   /** Fallback: la voz nativa del navegador/ChromeOS. */
@@ -167,15 +198,25 @@ export class VoiceOut {
         voices.find((v) => v.lang?.startsWith('es'));
       if (preferred) utter.voice = preferred;
 
-      utter.onstart = () => this.onStart();
-      utter.onend = () => {
-        if (gen === this.generation) this.onEnd();
+      // La voz del sistema no da nivel de audio: lo simulamos para que el orbe reaccione.
+      const stopPulse = ticker.add((now) => {
+        if (gen === this.generation) this.onLevel(0.28 + 0.22 * Math.abs(Math.sin(now / 130)) + Math.random() * 0.08);
+      });
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(watchdog);
+        stopPulse();
+        if (gen === this.generation) {
+          this.onLevel(0);
+          this.onEnd();
+        }
         resolve();
       };
-      utter.onerror = () => {
-        if (gen === this.generation) this.onEnd();
-        resolve();
-      };
+      const watchdog = setTimeout(finish, Math.min(90_000, 4000 + text.length * 110));
+      utter.onend = finish;
+      utter.onerror = finish;
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utter);
     });

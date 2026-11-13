@@ -4,6 +4,8 @@ const KEY = 'pedus.v12';
 
 export const defaultSettings = {
   voice: 'diana',
+  engine: 'auto', // auto = voz neuronal de Groq con respaldo del sistema · system = voz del sistema (español nativo)
+  autoPip: true,
   style: 'equilibrado',
   rate: 1,
   speak: true,

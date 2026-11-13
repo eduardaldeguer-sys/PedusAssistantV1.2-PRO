@@ -7,13 +7,14 @@
 
 import { config } from './config.js';
 import { chatCompletion } from './groq.js';
+import { withModel } from './models.js';
 
 const GH_API = 'https://api.github.com';
 
 export const KNOWN_SITES = {
-  chatgpt: { url: 'https://chat.openai.com', label: 'ChatGPT' },
-  'chat gpt': { url: 'https://chat.openai.com', label: 'ChatGPT' },
-  openai: { url: 'https://chat.openai.com', label: 'ChatGPT' },
+  chatgpt: { url: 'https://chatgpt.com', label: 'ChatGPT' },
+  'chat gpt': { url: 'https://chatgpt.com', label: 'ChatGPT' },
+  openai: { url: 'https://chatgpt.com', label: 'ChatGPT' },
   claude: { url: 'https://claude.ai', label: 'Claude' },
   gemini: { url: 'https://gemini.google.com', label: 'Gemini' },
   youtube: { url: 'https://youtube.com', label: 'YouTube' },
@@ -39,19 +40,46 @@ export const KNOWN_SITES = {
   notion: { url: 'https://notion.so', label: 'Notion' },
   figma: { url: 'https://figma.com', label: 'Figma' },
   wikipedia: { url: 'https://es.wikipedia.org', label: 'Wikipedia' },
-  chatgpt_plus: { url: 'https://chatgpt.com', label: 'ChatGPT' },
+  google: { url: 'https://www.google.com', label: 'Google' },
 };
 
 const normalize = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 
+const SITE_KEYS = Object.keys(KNOWN_SITES).sort((a, b) => b.length - a.length);
+
 export function resolveSite(name) {
-  const key = normalize(name);
-  if (KNOWN_SITES[key]) return KNOWN_SITES[key];
-  for (const [site, info] of Object.entries(KNOWN_SITES)) {
-    if (key.includes(site)) return info;
+  const raw = String(name || '').trim().replace(/[.!,?¿¡]+$/g, '');
+  if (!raw) return null;
+
+  // 1) URL completa: se respeta tal cual (solo http/https).
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      return { url: u.href, label: u.hostname.replace(/^www\./, '') };
+    } catch {
+      return null;
+    }
   }
-  if (/^[\w-]+(\.[\w-]+)+/.test(key)) return { url: `https://${key.replace(/^https?:\/\//, '')}`, label: key };
-  return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return null; // javascript:, data:, file:…
+
+  // 2) Nombre conocido exacto.
+  const key = normalize(raw);
+  if (Object.hasOwn(KNOWN_SITES, key)) return KNOWN_SITES[key];
+
+  // 3) Dominio con o sin ruta (la ruta conserva mayúsculas).
+  if (/^[\w-]+(\.[\w-]+)*\.[a-z]{2,}(:\d+)?(\/\S*)?$/i.test(raw)) {
+    try {
+      const u = new URL(`https://${raw}`);
+      return { url: u.href, label: u.hostname.replace(/^www\./, '') };
+    } catch {
+      /* sigue */
+    }
+  }
+
+  // 4) Nombre conocido como palabra completa dentro de la frase ("abre el gmail").
+  const padded = ` ${key.replace(/[^a-z0-9_]+/g, ' ')} `;
+  const hit = SITE_KEYS.find((site) => padded.includes(` ${site} `));
+  return hit ? KNOWN_SITES[hit] : null;
 }
 
 export function guessUrlFromText(text) {
@@ -273,10 +301,13 @@ export async function executeTool(name, rawArgs = {}, ctx = {}) {
       let url = site.url;
       if (args.query) {
         const q = encodeURIComponent(args.query);
-        if (/youtube/.test(url)) url = `https://www.youtube.com/results?search_query=${q}`;
-        else if (/google/.test(url)) url = `https://www.google.com/search?q=${q}`;
-        else if (/github/.test(url)) url = `https://github.com/search?q=${q}`;
-        else if (/spotify/.test(url)) url = `https://open.spotify.com/search/${q}`;
+        const host = new URL(url).hostname.replace(/^www\./, '');
+        if (host === 'youtube.com') url = `https://www.youtube.com/results?search_query=${q}`;
+        else if (host === 'google.com') url = `https://www.google.com/search?q=${q}`;
+        else if (host === 'github.com') url = `https://github.com/search?q=${q}`;
+        else if (host === 'open.spotify.com') url = `https://open.spotify.com/search/${q}`;
+        else if (host === 'es.wikipedia.org') url = `https://es.wikipedia.org/w/index.php?search=${q}`;
+        else if (host === 'maps.google.com') url = `https://www.google.com/maps/search/${q}`;
       }
       actions.push({ type: 'open_url', url });
       return { result: `Abierto ${site.label || url} en una pestaña nueva.`, actions };
@@ -285,19 +316,21 @@ export async function executeTool(name, rawArgs = {}, ctx = {}) {
     case 'web_search': {
       const query = String(args.query || '').slice(0, 500);
       if (!query) return { result: 'Falta la consulta de búsqueda.', actions };
-      const data = await chatCompletion({
-        model: config.models.research,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'Eres un buscador experto. Responde en español con hechos actuales y concisos (máx. 180 palabras). Incluye las fuentes (URLs) al final.',
-          },
-          { role: 'user', content: query },
-        ],
-        temperature: 0.3,
-        maxTokens: 900,
-      });
+      const { value: data } = await withModel('research', (model) =>
+        chatCompletion({
+          model,
+          messages: [
+            {
+              role: 'system',
+              content:
+                'Eres un buscador experto. Responde en español con hechos actuales y concisos (máx. 180 palabras). Incluye las fuentes (URLs) al final.',
+            },
+            { role: 'user', content: query },
+          ],
+          temperature: 0.3,
+          maxTokens: 900,
+        }),
+      );
       const text = data?.choices?.[0]?.message?.content?.trim() || 'Sin resultados.';
       return { result: text, actions };
     }

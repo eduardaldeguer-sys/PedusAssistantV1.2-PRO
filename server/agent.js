@@ -1,5 +1,6 @@
 import { config } from './config.js';
 import { chatCompletion } from './groq.js';
+import { modelFor, withModel } from './models.js';
 import { buildSystemPrompt } from './persona.js';
 import { executeTool, toolDefinitions } from './tools.js';
 
@@ -13,13 +14,15 @@ function normalizeHistory(history = []) {
     .map((m) => ({ role: m.role, content: m.content.slice(0, config.limits.maxMessageChars) }));
 }
 
-function pickModel({ mode, message, image }) {
-  if (image) return config.models.vision;
-  if (mode === 'deep') return config.models.deep;
-  if (mode === 'fast') return config.models.fast;
-  if (mode === 'recap') return config.models.chat;
-  const long = message.length > 600 || /\b(analiza|explícame|explicame|compara|plan|estrategia|por qué|porque|investiga|demuestra)\b/i.test(message);
-  return long ? config.models.deep : config.models.chat;
+const DEEP_HINT = /(^|[^\p{L}])(analiza|expl[ií]came|compara|estrategia|investiga|demuestra|razona|paso a paso)(?=$|[^\p{L}])/iu;
+
+/** Qué "cerebro" toca: el modelo concreto lo decide server/models.js. */
+function pickRole({ mode, message, image }) {
+  if (image) return 'vision';
+  if (mode === 'deep') return 'deep';
+  if (mode === 'fast') return 'fast';
+  if (mode === 'recap') return 'chat';
+  return message.length > 600 || DEEP_HINT.test(message) ? 'deep' : 'chat';
 }
 
 /**
@@ -38,7 +41,7 @@ export async function runAgent({
   const text = String(message || '').trim().slice(0, config.limits.maxMessageChars);
   if (!text && !image) throw new Error('Mensaje vacío.');
 
-  const model = pickModel({ mode, message: text, image });
+  let role = pickRole({ mode, message: text, image });
   const messages = [
     {
       role: 'system',
@@ -66,40 +69,41 @@ export async function runAgent({
   const newMemories = [];
   let reply = '';
   let usage = null;
-  let currentModel = model;
+  let currentModel = null; // se fija en la primera llamada que funcione
+
+  const call = async ({ withTools = true } = {}) => {
+    const params = {
+      messages,
+      ...(withTools ? { tools: toolDefinitions, toolChoice: 'auto' } : {}),
+      temperature: image ? 0.5 : 0.65,
+      maxTokens: 1100,
+    };
+    if (currentModel) return chatCompletion({ model: currentModel, ...params });
+    const { model, value } = await withModel(role, (m) => chatCompletion({ model: m, ...params }));
+    currentModel = model;
+    return value;
+  };
+
+  let fellBack = false;
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
     let completion;
     try {
-      completion = await chatCompletion({
-        model: currentModel,
-        messages,
-        tools: toolDefinitions,
-        toolChoice: 'auto',
-        temperature: image ? 0.5 : 0.65,
-        maxTokens: 1100,
-      });
+      completion = await call();
     } catch (error) {
-      // Fallback: si el modelo con visión falla por herramientas, reintenta sin ellas.
-      if (currentModel === config.models.vision && round === 0) {
-        completion = await chatCompletion({
-          model: currentModel,
-          messages,
-          temperature: 0.5,
-          maxTokens: 900,
-        });
-      } else if (currentModel !== config.models.chat) {
-        currentModel = config.models.chat;
-        completion = await chatCompletion({
-          model: currentModel,
-          messages,
-          tools: toolDefinitions,
-          toolChoice: 'auto',
-          temperature: 0.65,
-          maxTokens: 1100,
-        });
+      if (error?.code === 'missing_groq_key' || fellBack) throw error;
+      fellBack = true;
+      if (image) {
+        // Algunos modelos de visión no aceptan herramientas: reintenta sin ellas.
+        completion = await call({ withTools: false });
       } else {
-        throw error;
+        // Otro modelo distinto (otro cupo, otro formato de tool calling).
+        const backup = await modelFor('fast');
+        if (!backup || backup === currentModel) throw error;
+        console.warn(`[pedus] ${currentModel || role} falló (${error.message.slice(0, 100)}); pruebo con ${backup}`);
+        role = 'fast';
+        currentModel = null;
+        completion = await call();
       }
     }
 
@@ -151,9 +155,12 @@ export async function runAgent({
 
   // Limpieza para voz: quita markdown residual que suena mal leído.
   reply = reply
+    .replace(/<think>[\s\S]*?<\/think>/gi, ' ')
     .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/[*_`#>]/g, '')
     .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
+    .replace(/[*`]/g, '')
+    .replace(/(^|\s)[#>]+\s/g, '$1')
+    .replace(/(^|\s)_+|_+(?=\s|$)/g, '$1')
     .replace(/\s{2,}/g, ' ')
     .trim();
 

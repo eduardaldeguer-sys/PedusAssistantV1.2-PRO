@@ -5,6 +5,8 @@
  *    (si el navegador no lo soporta, se cae a modo pulsar-para-hablar).
  */
 
+import { ticker } from './ticker.js';
+
 // Solo cuenta si aparece al principio de la frase: evita que cualquier
 // conversación que mencione a Pedus lo despierte por accidente.
 const WAKE_PATTERNS = [
@@ -32,7 +34,7 @@ export class AudioInput {
     this.stream = null;
     this.ctx = null;
     this.analyser = null;
-    this.rafId = null;
+    this.stopMonitor = null;
     this.level = 0;
     this.noiseFloor = 0.012;
 
@@ -41,6 +43,7 @@ export class AudioInput {
     this.wakeDesired = false;
     this.paused = false;
     this.wakeRestartTimer = null;
+    this.wakeDebounce = null;
 
     this.recorder = null;
     this.chunks = [];
@@ -79,7 +82,9 @@ export class AudioInput {
   monitor() {
     const data = new Uint8Array(this.analyser.fftSize);
     let quietFrames = 0;
-    const loop = () => {
+    this.stopMonitor?.();
+    this.stopMonitor = ticker.add(() => {
+      if (!this.analyser) return;
       this.analyser.getByteTimeDomainData(data);
       let sum = 0;
       for (let i = 0; i < data.length; i += 1) {
@@ -98,9 +103,7 @@ export class AudioInput {
       }
 
       this.onLevel(Math.min(1, rms * 6));
-      this.rafId = requestAnimationFrame(loop);
-    };
-    loop();
+    });
   }
 
   get threshold() {
@@ -134,7 +137,12 @@ export class AudioInput {
    */
   recordUntilSilence({ maxMs = 15000, minMs = 700, silenceMs = 1000 } = {}) {
     return new Promise((resolve) => {
-      this.startRecorder();
+      try {
+        this.startRecorder();
+      } catch (error) {
+        this.onError(error);
+        return resolve(null);
+      }
       const started = performance.now();
       let spokeAt = 0;
       let quietSince = 0;
@@ -143,7 +151,7 @@ export class AudioInput {
       const finish = (cancelled) => {
         if (done) return;
         done = true;
-        clearInterval(timer);
+        stopTick();
         const wasRecording = this.recording;
         this.recording = false;
         const rec = this.recorder;
@@ -165,7 +173,8 @@ export class AudioInput {
 
       this.cancelRecording = () => finish(true);
 
-      const timer = setInterval(() => {
+      // Va con el reloj compartido para que siga funcionando con la pestaña en segundo plano.
+      const stopTick = ticker.add(() => {
         const now = performance.now();
         const elapsed = now - started;
         const loud = this.level > this.threshold;
@@ -183,7 +192,7 @@ export class AudioInput {
         }
         // Nada de voz en 6 s: no gastes tokens.
         if (!spokeAt && elapsed > 6000) return finish(true);
-      }, 60);
+      });
     });
   }
 
@@ -199,6 +208,15 @@ export class AudioInput {
     rec.interimResults = true;
     rec.maxAlternatives = 3;
 
+    // Los resultados parciales llegan a medias («okey pedus abre…»). Si actuáramos con ellos
+    // mandaríamos frases cortadas, así que esperamos al resultado final, o a que la frase
+    // deje de crecer durante un momento.
+    const fire = (transcript) => {
+      clearTimeout(this.wakeDebounce);
+      this.wakeDebounce = null;
+      this.onWake(cleanWakeWord(transcript));
+    };
+
     rec.onresult = (event) => {
       if (this.recognition !== rec || this.paused) return;
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
@@ -206,10 +224,17 @@ export class AudioInput {
         const transcript = result[0]?.transcript || '';
         if (!transcript) continue;
         if (result.isFinal) {
-          if (hasWakeWord(transcript)) this.onWake(cleanWakeWord(transcript));
+          if (hasWakeWord(transcript)) fire(transcript);
         } else {
           this.onPartial(transcript);
-          if (hasWakeWord(transcript)) this.onWake(cleanWakeWord(transcript), { partial: true });
+          if (hasWakeWord(transcript)) {
+            clearTimeout(this.wakeDebounce);
+            // Solo «Okey Pedus»: reacciona pronto. Con frase detrás: espera a que termine.
+            const wait = cleanWakeWord(transcript).length > 2 ? 1300 : 600;
+            this.wakeDebounce = setTimeout(() => {
+              if (this.recognition === rec && !this.paused) fire(transcript);
+            }, wait);
+          }
         }
       }
     };
@@ -251,6 +276,7 @@ export class AudioInput {
   }
 
   stopWake() {
+    clearTimeout(this.wakeDebounce);
     this.wakeDesired = false;
     this.wakeActive = false;
     clearTimeout(this.wakeRestartTimer);
@@ -273,6 +299,7 @@ export class AudioInput {
     if (this.paused === paused) return;
     this.paused = paused;
     if (paused) {
+      clearTimeout(this.wakeDebounce);
       clearTimeout(this.wakeRestartTimer);
       const rec = this.recognition;
       this.recognition = null;
@@ -325,8 +352,8 @@ export class AudioInput {
 
   stop() {
     this.stopWake();
-    if (this.rafId) cancelAnimationFrame(this.rafId);
-    this.rafId = null;
+    this.stopMonitor?.();
+    this.stopMonitor = null;
     if (this.stream) {
       this.stream.getTracks().forEach((t) => t.stop());
       this.stream = null;

@@ -7,6 +7,12 @@ import http from 'node:http';
 
 const calls = [];
 
+// Catálogo simulado. MOCK_MODELS="a,b,c" permite probar qué pasa cuando Groq retira modelos.
+const MODELS = (
+  process.env.MOCK_MODELS ||
+  'openai/gpt-oss-120b,openai/gpt-oss-20b,llama-3.3-70b-versatile,meta-llama/llama-4-scout-17b-16e-instruct,groq/compound-mini,whisper-large-v3-turbo,canopylabs/orpheus-v1-english'
+).split(',');
+
 const server = http.createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
@@ -16,6 +22,12 @@ const server = http.createServer((req, res) => {
     if (path === '/chat/completions') {
       const payload = JSON.parse(body);
       calls.push({ path, model: payload.model, tools: payload.tools?.length || 0 });
+      if (!MODELS.includes(payload.model)) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        return res.end(
+          JSON.stringify({ error: { message: `The model \`${payload.model}\` does not exist or you do not have access to it.`, code: 'model_not_found' } }),
+        );
+      }
       const hasToolResult = payload.messages.some((m) => m.role === 'tool');
       const userMsg = payload.messages.filter((m) => m.role === 'user').at(-1);
       const text = typeof userMsg?.content === 'string' ? userMsg.content : userMsg?.content?.[0]?.text || '';
@@ -96,7 +108,7 @@ const server = http.createServer((req, res) => {
 
     if (path === '/models') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ data: [{ id: 'mock' }], calls }));
+      return res.end(JSON.stringify({ data: MODELS.map((id) => ({ id, active: true })), calls }));
     }
 
     res.writeHead(404, { 'Content-Type': 'application/json' });

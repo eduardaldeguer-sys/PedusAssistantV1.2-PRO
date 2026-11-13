@@ -12,9 +12,13 @@ const int = (v, fallback) => {
 };
 
 export const config = {
-  version: '1.2.0',
+  version: '1.2.1',
   port: int(process.env.PORT, 3000),
   nodeEnv: process.env.NODE_ENV || 'development',
+  // Nº de proxies de confianza delante del servidor (Render = 1).
+  trustProxy: int(process.env.PEDUS_TRUST_PROXY, 1),
+  // Clave opcional: si se define, la API solo responde a quien la envíe.
+  accessKey: (process.env.PEDUS_ACCESS_KEY || '').trim(),
 
   groq: {
     apiKey: (process.env.GROQ_API_KEY || '').trim(),
@@ -24,19 +28,16 @@ export const config = {
     },
   },
 
+  // Modelos forzados por variable de entorno. Si se dejan vacíos (recomendado),
+  // server/models.js elige solo entre los que Groq tenga activos en ese momento.
   models: {
-    // Cerebro principal: rápido + tool calling fiable.
-    chat: process.env.PEDUS_CHAT_MODEL || 'llama-3.3-70b-versatile',
-    // Cerebro "profundo" para preguntas largas o razonamiento.
-    deep: process.env.PEDUS_DEEP_MODEL || 'openai/gpt-oss-120b',
-    // Respuestas ultra rápidas / confirmaciones.
-    fast: process.env.PEDUS_FAST_MODEL || 'llama-3.1-8b-instant',
-    // Modelo con visión para "oye Pedus, ¿qué ves?"
-    vision: process.env.PEDUS_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct',
-    // Sistema agéntico con búsqueda web incluida.
-    research: process.env.PEDUS_RESEARCH_MODEL || 'groq/compound-mini',
-    stt: process.env.PEDUS_STT_MODEL || 'whisper-large-v3-turbo',
-    tts: process.env.PEDUS_TTS_MODEL || 'canopylabs/orpheus-v1-english',
+    chat: (process.env.PEDUS_CHAT_MODEL || '').trim(),
+    deep: (process.env.PEDUS_DEEP_MODEL || '').trim(),
+    fast: (process.env.PEDUS_FAST_MODEL || '').trim(),
+    vision: (process.env.PEDUS_VISION_MODEL || '').trim(),
+    research: (process.env.PEDUS_RESEARCH_MODEL || '').trim(),
+    stt: (process.env.PEDUS_STT_MODEL || '').trim(),
+    tts: (process.env.PEDUS_TTS_MODEL || '').trim(),
   },
 
   // Voces de Orpheus disponibles en Groq (text-to-speech).
@@ -74,10 +75,11 @@ export const config = {
   },
 
   /** Public-safe view used by the frontend. Never includes secrets. */
-  publicConfig() {
+  publicConfig(models = {}) {
     return {
       version: this.version,
-      models: this.models,
+      models,
+      authRequired: this.accessKey.length > 0,
       ttsVoices: this.ttsVoices,
       defaultVoice: this.defaultVoice,
       capabilities: {

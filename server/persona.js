@@ -66,8 +66,14 @@ export const PROACTIVE_LINES = [
   'Aquí sigo. ¿Qué necesitas?',
 ];
 
-export function greeting() {
-  const hour = new Date().getHours();
+export function greeting(timezone = 'Europe/Madrid') {
+  let hour = new Date().getHours();
+  try {
+    // La hora del usuario, no la del servidor (Render va en UTC).
+    hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: timezone }).format(new Date()));
+  } catch {
+    /* zona desconocida: hora del servidor */
+  }
   if (hour < 6) return 'Vaya horas. Dime qué necesitas y vuelvo a la cama.';
   if (hour < 13) return 'Buenos días. ¿Por dónde empezamos?';
   if (hour < 20) return 'Buenas tardes. Aquí estoy.';

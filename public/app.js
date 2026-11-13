@@ -3,6 +3,8 @@ import { store } from './js/store.js';
 import { VoiceOut } from './js/speech.js';
 import { AudioInput, hasWakeWord, cleanWakeWord } from './js/mic.js';
 import { ScreenShare, fileToDataUrl } from './js/screen.js';
+import { ticker } from './js/ticker.js';
+import { createPip } from './js/pip.js';
 
 /* ------------------------------------------------------------------ */
 /* Referencias DOM                                                     */
@@ -26,6 +28,12 @@ const el = {
   btnMinimize: $('btn-minimize'),
   btnExpand: $('btn-expand'),
   btnSettings: $('btn-settings'),
+  btnPip: $('btn-pip'),
+  pipNote: $('pip-note'),
+  btnPipBack: $('btn-pip-back'),
+  setEngine: $('set-engine'),
+  setAutoPip: $('set-autopip'),
+  pipHint: $('pip-hint'),
   fileInput: $('file-input'),
   chips: $('chips'),
   screenPreview: $('screen-preview'),
@@ -100,6 +108,7 @@ function setState(next) {
     stopIdleWave();
   }
   el.win.dataset.state = next;
+  if (next === 'idle' || next === 'thinking') setLevel(0);
   const labels = {
     idle: 'En espera',
     listening: 'Te escucho',
@@ -165,7 +174,8 @@ function showTyping() {
 }
 
 function hideTyping() {
-  document.getElementById('typing')?.remove();
+  // El log puede estar en la mini ventana (otro documento): se busca dentro de él.
+  el.log.querySelector('#typing')?.remove();
 }
 
 /* Visualizador de onda */
@@ -177,7 +187,16 @@ for (let i = 0; i < WAVE_BARS; i += 1) {
   bars.push({ node: b, energy: Math.random() });
 }
 
+/* El orbe "respira" con el volumen: --level (0..1) lo usa el CSS para escalar y brillar. */
+let orbLevel = 0;
+function setLevel(level) {
+  orbLevel = level > orbLevel ? level : orbLevel * 0.82 + level * 0.18;
+  if (orbLevel < 0.004) orbLevel = 0;
+  el.win.style.setProperty('--level', orbLevel.toFixed(3));
+}
+
 function animateWave(level) {
+  setLevel(level);
   for (let i = 0; i < bars.length; i += 1) {
     const bar = bars[i];
     const center = 1 - Math.abs(i - (WAVE_BARS - 1) / 2) / ((WAVE_BARS - 1) / 2);
@@ -186,19 +205,23 @@ function animateWave(level) {
   }
 }
 
-let idleRaf = 0;
+let stopIdle = null;
 function idleWave() {
-  if (app.state !== 'idle') return;
-  const t = performance.now() / 900;
-  for (let i = 0; i < bars.length; i += 1) {
-    bars[i].node.style.height = `${3 + (Math.sin(t + i * 0.55) * 0.5 + 0.5) * 3}px`;
-  }
-  idleRaf = requestAnimationFrame(idleWave);
+  if (stopIdle || app.state !== 'idle') return;
+  stopIdle = ticker.add((now) => {
+    if (app.state !== 'idle') return;
+    const t = now / 900;
+    for (let i = 0; i < bars.length; i += 1) {
+      bars[i].node.style.height = `${3 + (Math.sin(t + i * 0.55) * 0.5 + 0.5) * 3}px`;
+    }
+    if (orbLevel) setLevel(0);
+  });
 }
 idleWave();
 
 function stopIdleWave() {
-  cancelAnimationFrame(idleRaf);
+  stopIdle?.();
+  stopIdle = null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -214,7 +237,10 @@ const voice = new VoiceOut({
   },
   onEnd: () => {
     if (app.state === 'speaking') setState('idle');
-    setTimeout(() => mic.pauseWake(false), 260);
+    // Solo se reactiva la wake word si no hemos pasado ya a escuchar otra frase.
+    setTimeout(() => {
+      if (app.state !== 'listening' && app.state !== 'speaking') mic.pauseWake(false);
+    }, 260);
     caption(app.muted ? 'Silenciado' : 'Di «Okey Pedus» o pulsa el orbe');
   },
   onLevel: (level) => {
@@ -370,7 +396,7 @@ function matchCommand(text) {
       const phrase = norm(cmd.phrase);
       if (!phrase) return false;
       if (t === phrase || t.startsWith(`${phrase} `)) return true;
-      return phrase.length >= 4 && (` ${t} `.includes(` ${phrase} `) || t.includes(phrase));
+      return phrase.length >= 4 && ` ${t} `.includes(` ${phrase} `);
     }) || null
   );
 }
@@ -381,7 +407,7 @@ async function runCommand(cmd, originalText) {
       const url = /^https?:/.test(cmd.value) ? cmd.value : `https://${cmd.value.replace(/^\/+/, '')}`;
       const opened = window.open(url, '_blank', 'noopener');
       if (!opened) toast('El navegador bloqueó la pestaña. Permite las ventanas emergentes para Pedus.');
-      await respond(`He abierto ${cmd.value}.`, { tools: ['comando'], speak: true });
+      respond(`He abierto ${cmd.value}.`, { tools: ['comando'], speak: true });
       return true;
     }
     if (cmd.type === 'tool') {
@@ -396,28 +422,25 @@ async function runCommand(cmd, originalText) {
       }
       const out = await api.action(tool.trim(), args);
       executeActions(out.actions || []);
-      await respond(out.result, { tools: [tool], speak: true });
-      return true;
-    }
-    if (cmd.type === 'prompt') {
-      await handleUserText(cmd.value || originalText, { skipCommands: true });
+      respond(out.result, { tools: [tool.trim()], speak: true });
       return true;
     }
   } catch (error) {
     toast(error.message);
-    await respond(`No he podido ejecutar ese comando: ${error.message}`, { speak: true });
+    respond(`No he podido ejecutar ese comando: ${error.message}`, { speak: true });
     return true;
   }
   return false;
 }
 
-async function respond(text, { tools = [], speak = true, model } = {}) {
+/** Muestra una respuesta y la lee. No espera a que termine de hablar. */
+function respond(text, { tools = [], speak = true } = {}) {
   hideTyping();
   if (!text) return;
   addMessage('assistant', text, { tools });
   caption(text);
-  if (speak) await say(text);
-  else setState('idle');
+  if (speak) say(text);
+  if (app.state === 'thinking') setState('idle'); // voz desactivada o silenciado
 }
 
 async function handleUserText(rawText, { skipCommands = false } = {}) {
@@ -425,6 +448,7 @@ async function handleUserText(rawText, { skipCommands = false } = {}) {
   if (!text || app.busy) return;
   app.lastUserText = text;
   app.busy = true;
+  if (app.state === 'speaking') voice.stop(); // si estaba hablando, se calla: mandas tú
   stopIdleWave();
   el.win.classList.remove('is-compact');
   el.win.classList.add('is-expanded');
@@ -432,27 +456,24 @@ async function handleUserText(rawText, { skipCommands = false } = {}) {
   addMessage('user', text);
   setState('thinking');
   caption(text);
-
-  // 1) Comandos personalizados (instantáneos, sin tokens).
-  if (!skipCommands) {
-    const cmd = matchCommand(text);
-    if (cmd) {
-      showTyping();
-      const handled = await runCommand(cmd, text);
-      if (handled) {
-        app.busy = false;
-        return;
-      }
-    }
-  }
-
-  // 2) Cerebro completo con herramientas + visión opcional.
   showTyping();
-  const image = app.pendingImage;
-  app.pendingImage = null;
+
   try {
+    // 1) Comandos personalizados.
+    let prompt = text;
+    const cmd = skipCommands ? null : matchCommand(text);
+    if (cmd?.type === 'prompt') {
+      // «Preguntar a Pedus»: la frase se sustituye por el texto guardado y sigue al modelo.
+      prompt = cmd.value || text;
+    } else if (cmd && (await runCommand(cmd, text))) {
+      return; // abrir web / herramienta: instantáneo y sin tokens
+    }
+
+    // 2) Cerebro completo con herramientas + visión opcional.
+    const image = app.pendingImage;
+    app.pendingImage = null;
     const result = await api.chat({
-      message: text,
+      message: prompt,
       history: store.historyForModel(14).slice(0, -1),
       memory: store.memoryFacts(),
       settings: { style: S().style, voice: S().voice, timezone: S().timezone },
@@ -460,15 +481,13 @@ async function handleUserText(rawText, { skipCommands = false } = {}) {
       timezone: S().timezone,
       mode: 'auto',
     });
-    hideTyping();
     if (result.memories?.length) {
       for (const fact of result.memories) store.addMemory(fact);
       renderMemory();
     }
     executeActions(result.actions || []);
-    addMessage('assistant', result.reply, { tools: (result.tools || []).map((t) => t.name) });
-    caption(result.reply);
-    await say(result.reply);
+    // No se espera a que acabe de hablar: así puedes interrumpirle o escribir mientras tanto.
+    respond(result.reply, { tools: (result.tools || []).map((t) => t.name) });
   } catch (error) {
     hideTyping();
     const msg =
@@ -478,8 +497,8 @@ async function handleUserText(rawText, { skipCommands = false } = {}) {
     addMessage('assistant', msg, { persist: false });
     caption(msg);
     toast(msg, 5000);
-    setState('idle');
   } finally {
+    hideTyping();
     app.busy = false;
     if (app.state === 'thinking') setState('idle');
     ensureMic({ silent: true });
@@ -523,11 +542,13 @@ function executeActions(actions) {
         if (action.action === 'mute') {
           app.muted = true;
           voice.stop();
+          mic.stopWake();
           setState('idle');
           toast('Micrófono y voz silenciados');
         }
         if (action.action === 'unmute') {
           app.muted = false;
+          if (S().wake) mic.startWake();
           setState('idle');
           toast('Voz activada');
         }
@@ -638,7 +659,15 @@ function syncSettingsUI() {
   el.outSens.textContent = sensLabel(s.sensitivity);
   el.setWake.checked = s.wake;
   el.setTheme.checked = s.theme === 'light';
-  document.documentElement.dataset.theme = s.theme;
+  el.setEngine.value = s.engine || 'auto';
+  el.setVoice.disabled = s.engine === 'system';
+  el.setAutoPip.checked = s.autoPip !== false;
+  applyTheme(s.theme);
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme || 'dark';
+  if (pip.window) pip.window.document.documentElement.dataset.theme = theme || 'dark';
 }
 
 function sensLabel(v) {
@@ -693,6 +722,8 @@ function renderStatus() {
     ['Groq', c?.capabilities?.groq ? 'Conectado' : 'Sin clave', c?.capabilities?.groq ? 'ok' : 'bad'],
     ['GitHub', c?.capabilities?.github ? 'Con token' : 'Público', c?.capabilities?.github ? 'ok' : ''],
     ['Modelo', c?.models?.chat || '—', ''],
+    ['Visión', c?.models?.vision || '—', ''],
+    ['Voz (modelo)', S().engine === 'system' ? 'Sistema' : c?.models?.tts || '—', ''],
     ['Voz', `${S().voice}${app.config ? '' : ' (local)'}`, ''],
     ['Micrófono', mic.stream ? 'Activo' : 'Inactivo', mic.stream ? 'ok' : ''],
     ['Wake word', mic.wakeActive ? 'Escuchando' : 'Off', mic.wakeActive ? 'ok' : ''],
@@ -748,7 +779,7 @@ el.chips.addEventListener('click', (e) => {
   const chip = e.target.closest('.chip');
   if (!chip) return;
   if (chip.dataset.action === 'open_site') {
-    executeActions([{ type: 'open_url', url: 'https://chat.openai.com' }]);
+    executeActions([{ type: 'open_url', url: 'https://chatgpt.com' }]);
     return;
   }
   if (/pantalla|resume/i.test(chip.dataset.prompt || '')) {
@@ -830,7 +861,15 @@ el.setWake.addEventListener('change', async () => {
 el.setTheme.addEventListener('change', () => {
   const theme = el.setTheme.checked ? 'light' : 'dark';
   store.updateSettings({ theme });
-  document.documentElement.dataset.theme = theme;
+  applyTheme(theme);
+});
+el.setEngine.addEventListener('change', () => {
+  store.updateSettings({ engine: el.setEngine.value });
+  el.setVoice.disabled = el.setEngine.value === 'system';
+});
+el.setAutoPip.addEventListener('change', () => {
+  store.updateSettings({ autoPip: el.setAutoPip.checked });
+  pip.setAuto(el.setAutoPip.checked);
 });
 
 el.btnTestVoice.addEventListener('click', async () => {
@@ -880,7 +919,13 @@ el.btnDiagnostics.addEventListener('click', async () => {
   el.btnDiagnostics.textContent = 'Probando…';
   try {
     const res = await api.diagnostics();
-    toast(res.groqConfigured ? `Groq OK · ${res.models?.chat}` : 'Falta GROQ_API_KEY en Render');
+    if (!res.groqConfigured) toast('Falta GROQ_API_KEY en Render');
+    else if (res.warnings?.length) toast(`Groq OK, pero: ${res.warnings.join(' ')}`, 9000);
+    else toast(`Groq OK · ${res.models?.chat}`);
+    if (res.models && app.config) {
+      app.config.models = res.models;
+      renderStatus();
+    }
   } catch (error) {
     toast(`Groq falló: ${error.message}`, 6000);
   } finally {
@@ -898,25 +943,63 @@ el.btnExport.addEventListener('click', () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 3000);
 });
 
-/* Atajos de teclado */
-document.addEventListener('keydown', (e) => {
-  const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
+/* Atajos de teclado (también dentro de la mini ventana) */
+function onKey(e) {
+  const doc = e.currentTarget;
+  const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(doc.activeElement?.tagName);
+  const inPip = doc !== document;
   const settingsOpen = !el.settingsBackdrop.hidden;
-  if (e.code === 'Space' && !typing && !settingsOpen) {
+  if (e.code === 'Space' && !typing && (inPip || !settingsOpen)) {
     e.preventDefault();
     if (app.state === 'speaking') voice.stop();
-    else startListening();
+    else if (app.state !== 'listening') startListening();
   }
   if (e.key === 'Escape') {
-    if (!el.settingsBackdrop.hidden) closeSettings();
+    if (!inPip && settingsOpen) closeSettings();
     else if (app.state === 'speaking') voice.stop();
-    else minimize();
+    else if (!inPip) minimize();
   }
   if (e.key === '/' && !typing) {
     e.preventDefault();
     el.input.focus();
   }
+}
+document.addEventListener('keydown', onKey);
+
+/* ------------------------------------------------------------------ */
+/* Mini ventana flotante (como el minirreproductor de Spotify)         */
+/* ------------------------------------------------------------------ */
+
+const pip = createPip({
+  node: el.win,
+  onOpen: (w) => {
+    restore();
+    closeSettings();
+    ticker.useWindow(w); // las animaciones siguen aunque la pestaña quede oculta
+    w.document.addEventListener('keydown', onKey);
+    el.pipNote.hidden = false;
+    el.btnPip.classList.add('is-active');
+    el.log.scrollTop = el.log.scrollHeight;
+  },
+  onClose: () => {
+    ticker.useWindow(window);
+    el.pipNote.hidden = true;
+    el.btnPip.classList.remove('is-active');
+    el.log.scrollTop = el.log.scrollHeight;
+  },
 });
+
+async function openMini() {
+  try {
+    await pip.open();
+    ensureMic({ silent: true });
+  } catch (error) {
+    toast(error.message, 5200);
+  }
+}
+
+el.btnPip.addEventListener('click', () => (pip.active ? pip.close() : openMini()));
+el.btnPipBack.addEventListener('click', () => pip.close());
 
 /* Arrastrar la ventana (desktop / ChromeOS con ratón) */
 (() => {
@@ -926,7 +1009,7 @@ document.addEventListener('keydown', (e) => {
   let dragging = false;
 
   handle.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('button')) return;
+    if (e.target.closest('button') || pip.active) return;
     const rect = el.win.getBoundingClientRect();
     start = { x: e.clientX, y: e.clientY };
     offset = { x: rect.left, y: rect.top };
@@ -960,6 +1043,7 @@ document.addEventListener('keydown', (e) => {
 })();
 
 window.addEventListener('beforeunload', () => {
+  pip.close();
   screen.stop();
   mic.stop();
   voice.stop();
@@ -975,7 +1059,7 @@ store.subscribe(() => {
 
 async function boot() {
   const s = S();
-  document.documentElement.dataset.theme = s.theme || 'dark';
+  applyTheme(s.theme);
   const wantsListen = new URLSearchParams(location.search).get('listen') === '1';
 
   // Historial reciente en pantalla (últimos 6 mensajes).
@@ -1002,7 +1086,7 @@ async function boot() {
   }
 
   try {
-    const g = await api.greeting();
+    const g = await api.greeting(s.timezone);
     if (!store.state.history.length) {
       caption(g.text);
     }
@@ -1027,6 +1111,18 @@ async function boot() {
   if (!mic.speechSupported) {
     el.wakeHint.textContent =
       'Tu navegador no soporta el reconocimiento nativo: la wake word «Okey Pedus» no estará activa, pero puedes pulsar el orbe y hablar (Whisper de Groq transcribe tu voz).';
+  }
+
+  // Mini ventana flotante: botón manual + apertura automática al cambiar de pestaña.
+  if (pip.supported) {
+    const auto = pip.setAuto(s.autoPip !== false);
+    el.pipHint.textContent = auto
+      ? 'Al cambiar de pestaña, Pedus salta a una ventanita siempre visible. La primera vez Chrome te pedirá permiso («Picture-in-picture automático»). Necesita el micrófono activo.'
+      : 'Tu Chrome no abre la mini ventana solo: usa el botón de la cabecera.';
+  } else {
+    el.btnPip.hidden = true;
+    el.setAutoPip.disabled = true;
+    el.pipHint.textContent = 'La mini ventana flotante necesita Chrome o Edge de escritorio (ChromeOS incluido).';
   }
 
   setState('idle');
